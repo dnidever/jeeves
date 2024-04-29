@@ -1,5 +1,8 @@
 import os
 import numpy as np
+import traceback
+import subprocess
+from . import datamodel
 
 
 # Ideas
@@ -14,3 +17,124 @@ import numpy as np
 #  delve, nsc, apogee, etc.
 
 # Ideas from PHOTRED/MAPS, SMASH, DELVE, APOGEE/SDSS, NSC, LSST, JWST
+
+PROJECT = None
+PROJECT_DIRECTORY = None
+
+def set_project(name):
+    global PROJECT
+    PROJECT = name
+
+def projects_filename():
+    homedir = os.path.expanduser("~")
+    jdir = os.path.join(homedir,'.jeeves')
+    if os.path.exists(jdir)==False:
+        os.makedirs(jdir)
+    # Create project file
+    projectsfile = os.path.join(jdir,'projects')   
+    return projectsfile
+    
+def read_config(filename):
+    """
+    Read from a fits file
+    """
+    if os.path.exists(filename)==False:
+        raise FileNotFoundError(filename)
+    # Read from yaml file
+    with open(filename, 'r') as f:
+        prime_service = yaml.safe_load(f)
+    return prime_service
+            
+def write_config(data,filename,overwrite=False):
+    """
+    Write to a yaml file
+    """
+    with open(filename,'w') as f:
+        yaml.dump(data,f)
+
+def init_project(name,directory):
+    """
+    Initialize a new project
+    """
+
+    # Make the directory
+    try:
+        os.makedirs(directory)
+    except:
+        print('Making '+str(directory)+' failed')
+        traceback.print_exc()
+
+    # Create sub-directories
+    for n in ['config','data','registry']:
+        os.makedirs(os.path.join(directory,n))
+
+    # config/
+    #   main configuration file and the individual
+    #   datamodel files
+    # data/
+    #   where the data lives
+    #   a subdirectory for each file type
+    # registry/
+    #   the databases, one per file type
+        
+    # Create the configuration file
+    # yaml file
+    config = {'name':name,'directory':directory}
+    configfile = os.path.join(directory,'config','config.yaml')
+    write_config(config,configfile)
+
+    # Add project to ~/.jeeves/projects file
+    homedir = os.path.expanduser("~")
+    jdir = os.path.join(homedir,'.jeeves')
+    if os.path.exists(jdir)==False:
+        os.makedirs(jdir)
+    # Create project file
+    projectsfile = os.path.join(jdir,'projects')
+    if os.path.exists(projectsfile)==False:
+        projects = {}
+    else:
+        projects = read_config(projectsfile)
+    # Add new project
+    projects[name] = {'name':name,'directory':directory}
+    write_config(projects,projectsfile)
+    
+def add_datamodel(name,dmodel,project=None):
+    """
+    Add file type/datamodel
+    """
+    
+    if isinstance(name,str)==False:
+        raise ValueError('name must be a string')
+    if isinstance(dmodel,datamodel.DataModel)==False:
+        raise ValueError('dmodel must be a DataModel object')
+
+    # Project name
+    if project is None and PROJECT is None:
+        raise ValueError('Need project name')
+    if project is None:
+        project = PROJECT
+
+    # Load global jeeves projects file
+    pconfig = read_config(projects_filename())
+    if project not in pconfig.keys():
+        raise ValueError(str(project)+' not found')
+    # Get directory
+    directory = pconfig[name]['directory']
+    # Add to projectconfig file
+    configfile = os.path.join(directory,'config','config.yaml')
+    config = read_config(configfile)
+    if 'datamodels' in config.keys():
+        config['datamodels'].append(name)
+    else:
+        config['datamodels'] = [name]
+    write_config(config,configfile)
+    # Add own config file
+    dconfigfile = os.path.join(directory,'config',name+'.yaml')
+    datamodel.write(dconfigfile)
+    # Create data directory
+    datadir = os.path.join(directory,'data',name)
+    os.makedirs(datadir)
+    # create blank database
+    dbname = os.path.join(directory,'registry',name+'db')
+    res = subprocess.run(['sqlite3',dbname],capture_output=True)
+    
