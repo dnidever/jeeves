@@ -160,6 +160,25 @@ class MetaData(object):
     def copy(self):
         """ Make a copy """
         return copy.deepcopy(self)
+
+    @classmethod
+    def read(cls,filename,exten=0):
+        """
+        Read a file
+        """
+        if os.path.exists(filename)==False:
+            raise FileNotFoundError(filename)
+        head = fits.getheader(filename,exten)
+        return MetaData(head)
+        
+    def write(self,filename,overwrite=False):
+        """
+        Write to a file
+        """
+        # construct a header
+        head = self.to_header()
+        # write to file
+        hdulist.writeto(filename,data=None,header=head,overwrite=overwrite)
     
 class DataBucket(object):
     """ Container for data and metadata/header """
@@ -228,70 +247,237 @@ class DataBucket(object):
     def copy(self):
         """ Make a copy """
         return copy.deepcopy(self)
+
+    @classmethod
+    def read(cls,filename,exten=0):
+        """
+        Read from a fits file
+        """
+        if os.path.exists(filename)==False:
+            raise FileNotFoundError(filename)
+        hdu = fits.open()
+        if exten>=len(hdu):
+            raise IndexError('Extension number too large')
+        data = hdu[exten].data.copy()
+        head = hdu[exten].header.copy()
+        hdu.close()
+        return Databucket(data,head)
+        
+    def write(self,filename,overwrite=False):
+        """
+        Write to a file
+        """
+        # construct HDUList
+        hdu = self.to_hdulist()
+        # write to file
+        hdu.writeto(filename,overwrite=overwrite)
     
 class DataContainer(object):
 
-    def __init__(self,init):
+    def __init__(self,init=None):
 
         # how about using the asdf format directly?
+        self._bucketnames = []
+
+        # Empty container
+        if init is None:
+            return
         
         # Input types
         # Filename
         if isinstance(init,str):
             hdulist = fits.open(init)
-            self._from_hdulist(hdulist)
+            bucketnames = self._from_hdulist(hdulist)
             hdulist.close()
             self.filename = init
+            self._bucketnames = bucketnames
         # HDUList
         elif isinstance(init,fits.HDUList):
-            self._from_hdulist(init)
+            bucketnames = self._from_hdulist(init)
+            self._bucketnames = bucketnames
         # Some data
         else:
-            self.data = init
-            self.meta = MetaData()
+            db = DataBucket(init)
+            self.add_bucket(db)
 
     def _from_hdulist(self,hdulist):
         """ Create DataContainer from HDUList """
-        self.data = None
-        self.meta = None
+        bucketnames = []
         for i in range(len(hdulist)):
             # Primary HDU is special            
             if i==0:
-                self.data = hdulist[i].data
-                self.meta = MetaData(hdulist[i].header)
+                name = 'primary'
             # Extensions
             else:
                 name = hdulist[i].header.get('extname')
                 if name is None:
                     name = 'exten'+str(i)
-                db = DataBucket(hdulist[i].data,hdulist[i].header,name)
-                setattr(self,name,db)
+            db = DataBucket(hdulist[i].data,hdulist[i].header,name)
+            setattr(self,name,db)
+            bucketnames.append(name)
+        return bucketnames
+            
+    def __len__(self):
+        return self.nbuckets
 
+    def __setitem__(self,index,bucket):
+        # Index can be integer or str (name)
+        if isinstance(bucket,DataBucket)==False:
+            raise ValueError('Must be DataBucket')
+        if isinstance(index,int):
+            if index>=self.nbuckets:
+                raise IndexError('Index too large')
+            name = self.bucketnames[index]
+            setattr(self,name,bucket)
+        elif isinstance(index,str):
+            if index in self.bucketnames:
+                setattr(self,index,bucket)
+            else:
+                raise IndexError(str(index)+' not found')
+        else:
+            raise IndexError('Index must be integer or string name')
+    
+    def __getitem__(self,index):
+        """
+        Return a separate spectral order
+        Index can be:
+        1) integer
+        2) string of bucket names
+        3) slice
+        """
+        if isinstance(index,int):
+            if index>=self.nbuckets:
+                raise IndexError('Index is too large')
+            name = self.bucketnames[index]
+            return getattr(self,name)
+        elif isinstance(index,str):
+            if index in self.bucketnames:
+                return getattr(self,index)
+            else:
+                raise ValueError(str(index)+' not found')
+        elif isinstance(index,slice):
+            # Return a new DataContainer with these DataBuckets
+            start1,stop1,step1 = index.indices(self.nbuckets)
+            names = self.bucketnames[index]
+            new = DataContainer()
+            for n in names:
+                new.add_bucket(getattr(self,n).copy())
+            return new
+            
+    def __iter__(self):
+        self._count = 0
+        return self
+
+    def __next__(self):
+        if self._count < self.nbuckets:
+            self._count += 1    
+            return self[self._count-1]
+        else:
+            raise StopIteration
+
+    def __add__(self, value):
+        new = self.copy()
+        new.add_bucket(value)
+        return new
+
+    def __iadd__(self, value):
+        self.add_bucket(value)
+        return self
+
+    def __radd__(self, value):
+        return self + value
+
+    def add_bucket(self,bucket,name=None):
+        """ Add a new data bucket."""
+        if isinstance(bucket,DataBucket)==False:
+            raise ValueError('Can only add DataBuckets')
+        if name is None:
+            if hasattr(bucket,'name') and bucket.name is not None:
+                name = bucket.name
+            else:
+                if self.nbuckets==0:
+                    name = 'primary'
+                else:
+                    names = self.bucketnames
+                    extnum = [int(e[5:]) for e in names if e.startswith('exten')]
+                    name = 'exten'+str(np.max(extnum)+1)
+                    print('Adding',name)
+        if self.index(name) != -1:
+            raise ValueError(str(hame)+' already taken')
+        setattr(self,name,bucket)
+        self._bucketnames.append(name)
+
+    def del_bucket(self,index):
+        """ Delete a bucket """
+        if isinstance(index,int)==False and isinstance(index,str)==False:
+            raise IndexError('Index must be integer or string name')
+        if isinstance(index,int):
+            if index>=self.nbuckets:
+                raise IndexError('Index is too large')
+            name = self.bucketnames[index]
+        else:
+            name = index
+        delattr(self,name)
+        self._bucketnames.remove(name)
+        
+    @property
+    def data(self):
+        if self.nbuckets>0:
+            return self[0].data
+        else:
+            return None
+
+    @property
+    def meta(self):
+        if self.nbuckets>0:
+            return self[0].meta
+        else:
+            return None
+        
+    def __array__(self):
+        return self.data
+
+    @property
     def bucketnames(self):
         """ Return the names of all the data buckets """
-        # We need to check every time since someone might
-        # have added a new one
-        names = []
+        # check _bucketnames and add any others in alphabetical order
+        names = self._bucketnames.copy()
+        nnames = len(names)
+        ignore = names+['bucketnames','nbuckets','buckets','data','meta']
         for d in dir(self):
+            if d in ignore or d[0]=='_': continue
             if isinstance(getattr(self,d),DataBucket):
                 names.append(d)
+        if len(names)>nnames:
+            self._bucketnames = names  # update
         return names
 
+    @property
+    def nbuckets(self):
+        return len(self.bucketnames)
+    
     @property
     def buckets(self):
         """ Return the names of all the data buckets """
         # We need to check every time since someone might
         # have added a new one
         out = []
-        for d in dir(self):
-            if isinstance(getattr(self,d),DataBucket):
-                out.append(getattr(self,d))
+        for d in self.bucketnames:
+            out.append(getattr(self,d))
         return out
-    
+
+    def index(self,name):
+        # Get bucket index by name
+        index, = np.where(self.bucketnames == name)
+        if len(index)==0:
+            return -1
+        else:
+            return index[0]
+        
     def __repr__(self):
         """ Represent the data """
         out = self.__class__.__name__ + '('
-        out += str(len(self.bucketnames())) + ' buckets)\n'
+        out += str(self.nbuckets) + ' buckets)\n'
         if hasattr(self,'filename') and getattr(self,'filename') is not None:
             out += 'filename = ' + self.filename + '\n'
         #if self.data is not None:
@@ -307,7 +493,13 @@ class DataContainer(object):
 
     def info(self):
         """ Give more detailed information """
-        pass
+        out = self.__class__.__name__ + '('
+        out += str(self.nbuckets) + ' buckets)\n'
+        if hasattr(self,'filename') and getattr(self,'filename') is not None:
+            out += 'filename = ' + self.filename + '\n'
+        print(out)
+        for n in self.bucketnames:
+            self[n].info()
 
     def copy(self):
         """ Make a copy """
