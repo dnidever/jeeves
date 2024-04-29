@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+#
+# Jeeves command line tool
+
+from __future__ import print_function
+
+import os
+import time
+import numpy as np
+from astropy.io import fits
+from astropy.table import Table
+from argparse import ArgumentParser
+from dlnpyutils import utils as dln
+import subprocess
+import traceback
+import importlib as imp
+try:
+    import __builtin__ as builtins # Python 2
+except ImportError:
+    import builtins # Python 3
+
+# Main command-line program
+if __name__ == "__main__":
+    parser = ArgumentParser(description='Run Jeeves commands')
+    parser.add_argument('commands', type=str, nargs='+', help='Commands')
+    parser.add_argument('-p','--project', type=str, nars=1, help='Project name')
+    parser.add_argument('-c','--clobber', action='store_true', help='Overwrite any existing files')
+    parser.add_argument('-v','--verbose', action='store_true', help='Verbose output')
+    args = parser.parse_args()
+
+    commands = args.commands
+    cmd = commands[0]
+
+    # Main commands
+    if cmd=='init':
+        if len(commands)<3:
+            raise ValueError('jeeves init name directory')
+        jeeves.init(commands[1],commands[2])
+    elif cmd=='add':
+        pass
+    
+    

@@ -13,6 +13,7 @@ setup(name='jeeves',
       requires=['numpy','astropy(>=4.0)','scipy'],
       zip_safe = False,
       include_package_data=True,
+      scripts=['bin/jeeves'],
       packages=find_namespace_packages(where="python"),
       package_dir={"": "python"}      
 )
