@@ -5,15 +5,17 @@
 from __future__ import print_function
 
 import os
-import time
+import sys
+#import time
 import numpy as np
-from astropy.io import fits
-from astropy.table import Table
+#from astropy.io import fits
+#from astropy.table import Table
 from argparse import ArgumentParser
-from dlnpyutils import utils as dln
-import subprocess
+#from dlnpyutils import utils as dln
+#import subprocess
+import yaml
 import traceback
-import importlib as imp
+#import importlib as imp
 try:
     import __builtin__ as builtins # Python 2
 except ImportError:
@@ -22,21 +24,70 @@ except ImportError:
 # Main command-line program
 if __name__ == "__main__":
     parser = ArgumentParser(description='Run Jeeves commands')
-    parser.add_argument('commands', type=str, nargs='+', help='Commands')
-    parser.add_argument('-p','--project', type=str, nars=1, help='Project name')
+    parser.add_argument('commands', type=str, nargs='+', help='Command to execute (init,add,config,set)')
+    parser.add_argument('-p','--project', type=str, nargs=1, help='Project name')
     parser.add_argument('-c','--clobber', action='store_true', help='Overwrite any existing files')
     parser.add_argument('-v','--verbose', action='store_true', help='Verbose output')
     args = parser.parse_args()
 
     commands = args.commands
     cmd = commands[0]
+    project = args.project
 
+    # Load session file
+    tty = os.ttyname(sys.stdout.fileno())
+    tty = os.path.basename(tty)
+    homedir = os.path.expanduser("~")
+    jdir = os.path.join(homedir,'.jeeves')
+    if os.path.exists(jdir)==False:
+        os.makedirs(jdir)
+    sessionfile = os.path.join(jdir,'session-'+str(tty)+'.yaml')
+    if os.path.exists(sessionfile):
+        with open(sessionfile, 'r') as f:
+            session = yaml.safe_load(f)
+    else:
+        session = {'project':None}
+            
+    # Get project for this session
+    if cmd != 'set':
+        if args.project is not None:
+            project = args.project[0]
+        else:
+            project = session['project']
+    
     # Main commands
+    # Initialize project
     if cmd=='init':
         if len(commands)<3:
-            raise ValueError('jeeves init name directory')
+            print('jeeves init name directory')
+            sys.exit()
         jeeves.init(commands[1],commands[2])
+    # Add a data model to a project
     elif cmd=='add':
-        pass
-    
-    
+        if len(commands)<2:
+            print('jeeves add datamodel')
+            sys.exit()
+        if os.path.exists(commands[1])==False:
+            raise FileNotFoundError(commands[1])
+        dmodel = DataModel.read(commands[1])
+        jeeves.add_datamodel(dmodel)
+    # Set project for this session
+    elif cmd=='set':
+        # need project name
+        if len(commands)<2 and args.project is None:
+            print('jeeves set project  OR  jeeves set --project project')
+            sys.exit()
+        if len(commands)>1:
+            project = commands[1]
+        else:
+            project = args.project[0]
+        session['project'] = project
+        # Write seesion file
+        with open(sessionfile,'w') as f:
+            yaml.dump(session,f)
+    # Print current project
+    elif cmd=='project':
+        print(project)
+        sys.exit()
+    else:
+        print(cmd+' not supported')
