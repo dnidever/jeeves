@@ -3,8 +3,57 @@ import numpy as np
 from dlnpyutils import utils as dln
 import time
 import sqlite3
+from . import utils
 
 # Jeeves registry database
+
+def keyize(key):
+    """ Make key into a single string."""
+    keylist = [str(k) for k in key]
+    skey = '----'.join(keylist)
+    return skey
+
+def convertToBinaryData(filename):
+    # Convert digital data to binary format
+    with open(filename, 'rb') as file:
+        blobData = file.read()
+    return blobData
+
+def insertBLOB(empId, name, photo, resumeFile):
+    try:
+        sqliteConnection = sqlite3.connect('SQLite_Python.db')
+        cursor = sqliteConnection.cursor()
+        print("Connected to SQLite")
+        sqlite_insert_blob_query = """ INSERT INTO new_employee
+                                  (id, name, photo, resume) VALUES (?, ?, ?, ?)"""
+
+        empPhoto = convertToBinaryData(photo)
+        resume = convertToBinaryData(resumeFile)
+        # Convert data into tuple format
+        data_tuple = (empId, name, empPhoto, resume)
+        cursor.execute(sqlite_insert_blob_query, data_tuple)
+        sqliteConnection.commit()
+        print("Image and file inserted successfully as a BLOB into a table")
+        cursor.close()
+
+    except sqlite3.Error as error:
+        print("Failed to insert blob data into sqlite table", error)
+    finally:
+        if sqliteConnection:
+            sqliteConnection.close()
+            print("the sqlite connection is closed")
+
+def opendb(dbfile):
+    """ Open database and add adapters """
+    sqlite3.register_adapter(np.int8, int)
+    sqlite3.register_adapter(np.int16, int)
+    sqlite3.register_adapter(np.int32, int)
+    sqlite3.register_adapter(np.int64, int)
+    sqlite3.register_adapter(np.float16, float)
+    sqlite3.register_adapter(np.float32, float)
+    sqlite3.register_adapter(np.float64, float)
+    db = sqlite3.connect(dbfile, detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
+    return db
 
 def writecat(cat,dbfile,table='meas'):
     """ Write a catalog to the database """
@@ -140,3 +189,100 @@ def query(dbfile,table='meas',cols='*',where=None,groupby=None,raw=False,verbose
     if verbose: print('got data in '+str(time.time()-t0)+' sec.')
 
     return cat
+
+class Registry(object):
+    """
+    Jeeves registry or database
+    """
+
+    def __init__(self,configfile):
+        self.configfile = configfile
+        self.database_filename = None
+        self.datamodel_filename = None
+        # Load config file
+        if os.path.exists(configfile)==False:
+            raise FileNotFoundError(configfile)
+        self.config = utils.read_config(configfile)
+        self.database_filename = self.config['database_filename']
+        self.datamodel_filename = self.config['datamodel_filename']
+        # initialize
+        self._db = None
+        self._cur = None
+        
+    def opendb(self):
+        """ Open the database for reading/writing."""
+        if self.database_filename is None:
+            raise ValueError('No database filename')
+        if self._db is None:
+            self._db = opendb(self.database_filename)
+        
+    def closedb(self):
+        """ Close the database."""
+        if self._db is not None:
+            if self.cur is not None:
+                self.cur.close()  # close cursor first
+            self._db.close()
+
+    @property
+    def db(self):
+        """ Return the db object."""
+        if self._db is None:
+            self.opendb()
+        return self._db
+            
+    @property
+    def cur(self):
+        """ Return the cursor object."""
+        # No cursor, create it
+        if self._cur is None:
+            self._cur = self.db.cursor()
+        return self._cur
+
+    def search(self,key):
+        """ Search for the key in the table."""
+        skey = keyize(key)
+        sql = "select * from registry where key='"+skey+"'"
+        self.cur.execute(sql)
+        res = self.cur.fetchall()
+        return res
+
+    def exists(self,key):
+        """ Check if the key exists in the registry."""
+        res = self.search(key)
+        if len(res)>0:
+            return True
+        else:
+            return False
+
+    def retrieve(self,key):
+        """ Retrieve the filename for a key."""
+        res = self.search(key)
+        if len(res)==0:
+            return None
+        else:
+            return res['filename']
+
+    def add(self,key,filename):
+        """ Add data to the registry."""
+        skey = keyize(key)
+        sql = "insert into registry (key,filename) values ('"+skey+"','"+filename+"')"
+        self.cur.execute(sql)
+        self.cur.commit()
+
+    def delete(self,key,hard=True):
+        """ Delete data from registry."""
+        skey = keyize(key)
+        sql = "select * from registry where key='"+skey+"'"
+        self.cur.execute(sql)
+        res = cur.fetchall()
+        if len(res)==0:
+            return
+        filename = res['filename']
+        # Delete the row in the reistry
+        sql = "delete from registry where key='"+skey+"'"
+        self.cur.execute(sql)
+        self.cur.commit()
+        # Delete file as well
+        if hard:
+            if os.path.exists(filename):
+                os.remove(filename)

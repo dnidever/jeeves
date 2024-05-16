@@ -2,7 +2,7 @@ import os
 import numpy as np
 import traceback
 import subprocess
-from . import datamodel
+from . import datamodel,utils
 
 
 # Ideas
@@ -18,39 +18,13 @@ from . import datamodel
 
 # Ideas from PHOTRED/MAPS, SMASH, DELVE, APOGEE/SDSS, NSC, LSST, JWST
 
-PROJECT = None
-PROJECT_DIRECTORY = None
+#PROJECT = None
+#PROJECT_DIRECTORY = None
 
-def set_project(name):
-    global PROJECT
-    PROJECT = name
-
-def projects_filename():
-    homedir = os.path.expanduser("~")
-    jdir = os.path.join(homedir,'.jeeves')
-    if os.path.exists(jdir)==False:
-        os.makedirs(jdir)
-    # Create project file
-    projectsfile = os.path.join(jdir,'projects')   
-    return projectsfile
-    
-def read_config(filename):
-    """
-    Read from a fits file
-    """
-    if os.path.exists(filename)==False:
-        raise FileNotFoundError(filename)
-    # Read from yaml file
-    with open(filename, 'r') as f:
-        prime_service = yaml.safe_load(f)
-    return prime_service
-            
-def write_config(data,filename,overwrite=False):
-    """
-    Write to a yaml file
-    """
-    with open(filename,'w') as f:
-        yaml.dump(data,f)
+#def set_project(name):
+#    """ Set project name for this Python session."""
+#    global PROJECT
+#    PROJECT = name
 
 def init_project(name,directory):
     """
@@ -138,3 +112,36 @@ def add_datamodel(name,dmodel,project=None):
     dbname = os.path.join(directory,'registry',name+'db')
     res = subprocess.run(['sqlite3',dbname],capture_output=True)
     
+class JeevesProject(object):
+    """
+    Jeeves Project object
+    """
+
+    def __init__(self,name):
+        self.name = name
+        self.__projects_filename = projects_filename()
+
+    def initialize(self):
+        init_project(self.name)
+
+    def read(self,kind,key):
+        """ Read a file."""
+        # Open the registry (if it's not open already
+        # perform the query
+        registry.query()
+
+    def write(self,data,kind,key):
+        """ Write a file ."""
+        pass
+
+    def register(self,files):
+        """ Add files to the registry."""
+        pass
+
+    def exists(self,kind,key):
+        """ Check if data exists."""
+        pass
+
+    def delete(self,kind,key):
+        """ Delete data."""
+        pass

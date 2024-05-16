@@ -12,6 +12,34 @@ def datadir():
     datadir = codedir+'/data/'
     return datadir
 
+def read_config(filename):
+    """
+    Read in yaml configuration file
+    """
+    if os.path.exists(filename)==False:
+        raise FileNotFoundError(filename)
+    # Read from yaml file
+    with open(filename, 'r') as f:
+        prime_service = yaml.safe_load(f)
+    return prime_service
+            
+def write_config(data,filename,overwrite=False):
+    """
+    Write configuration data to a yaml config file
+    """
+    with open(filename,'w') as f:
+        yaml.dump(data,f)
+
+def projects_filename():
+    """ Return filename of this user's jeeves 'projects' file  """
+    homedir = os.path.expanduser("~")
+    jdir = os.path.join(homedir,'.jeeves')
+    if os.path.exists(jdir)==False:
+        os.makedirs(jdir)
+    # Create project file
+    projectsfile = os.path.join(jdir,'projects')   
+    return projectsfile
+
 def nanmedfilt(x,size,mode='reflect'):
     return generic_filter(x, np.nanmedian, size=size)
 
