@@ -13,24 +13,30 @@ def keyize(key):
     skey = '----'.join(keylist)
     return skey
 
-def convertToBinaryData(filename):
+def converttobinarydata(filename):
     # Convert digital data to binary format
     with open(filename, 'rb') as file:
         blobData = file.read()
     return blobData
 
-def insertBLOB(empId, name, photo, resumeFile):
+def writebinarytofile(data,filename):
+    # Write binary format to file
+    with open(filename, 'wb') as file:
+        file.write(data)
+
+def insertblob(datafile):
     try:
-        sqliteConnection = sqlite3.connect('SQLite_Python.db')
+        dbfile = 'test.db'
+        sqliteConnection = sqlite3.connect(dbfile)
         cursor = sqliteConnection.cursor()
         print("Connected to SQLite")
-        sqlite_insert_blob_query = """ INSERT INTO new_employee
-                                  (id, name, photo, resume) VALUES (?, ?, ?, ?)"""
-
-        empPhoto = convertToBinaryData(photo)
-        resume = convertToBinaryData(resumeFile)
+        sqlite_insert_blob_query = """ INSERT INTO blobdata
+                                  (blob) VALUES (?)"""
+        empdata = converttobinarydata(datafile)
+        #resume = converttobinarydata(resumeFile)
         # Convert data into tuple format
-        data_tuple = (empId, name, empPhoto, resume)
+        #data_tuple = (empId, name, empPhoto, resume)
+        data_tuple = (empdata,)
         cursor.execute(sqlite_insert_blob_query, data_tuple)
         sqliteConnection.commit()
         print("Image and file inserted successfully as a BLOB into a table")
@@ -43,6 +49,18 @@ def insertBLOB(empId, name, photo, resumeFile):
             sqliteConnection.close()
             print("the sqlite connection is closed")
 
+def getblob(key):
+    """ Retrieve blob data from database """
+    dbfile = 'test.db'
+    sqliteConnection = sqlite3.connect(dbfile)
+    cursor = sqliteConnection.cursor()
+    sqlite_blob_query = "SELECT blob from blobdata where name='"+key+"'"
+    cursor.execute(sqlite_blob_query)
+    res = cursor.fetchall()
+    cursor.close()
+    data = res[0][0]
+    return data
+            
 def opendb(dbfile):
     """ Open database and add adapters """
     sqlite3.register_adapter(np.int8, int)
