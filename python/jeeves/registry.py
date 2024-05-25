@@ -1,4 +1,6 @@
-#!/usr/bin/env python                                                                                                                                                   
+#!/usr/bin/env python
+
+import os
 import numpy as np
 from dlnpyutils import utils as dln
 import time
@@ -9,8 +11,11 @@ from . import utils
 
 def keyize(key):
     """ Make key into a single string."""
-    keylist = [str(k) for k in key]
-    skey = '----'.join(keylist)
+    if utils.iterable(key):
+        keylist = [str(k) for k in key]
+        skey = '----'.join(keylist)
+    else:
+        skey = str(key)
     return skey
 
 def converttobinarydata(filename):
@@ -24,41 +29,36 @@ def writebinarytofile(data,filename):
     with open(filename, 'wb') as file:
         file.write(data)
 
-def insertblob(datafile):
+def insertblob(dbfile,key,datafile,column='blob',table='blobdata'):
+    """ Insert binary data from file into database """
     try:
-        dbfile = 'test.db'
-        sqliteConnection = sqlite3.connect(dbfile)
-        cursor = sqliteConnection.cursor()
-        print("Connected to SQLite")
-        sqlite_insert_blob_query = """ INSERT INTO blobdata
-                                  (blob) VALUES (?)"""
+        db = sqlite3.connect(dbfile)
+        cursor = db.cursor()
+        sql = "INSERT INTO "+table
+        sql += "("+column+") VALUES (?)"
         empdata = converttobinarydata(datafile)
-        #resume = converttobinarydata(resumeFile)
         # Convert data into tuple format
-        #data_tuple = (empId, name, empPhoto, resume)
         data_tuple = (empdata,)
-        cursor.execute(sqlite_insert_blob_query, data_tuple)
-        sqliteConnection.commit()
-        print("Image and file inserted successfully as a BLOB into a table")
+        cursor.execute(sql, data_tuple)
+        db.commit()
         cursor.close()
-
     except sqlite3.Error as error:
         print("Failed to insert blob data into sqlite table", error)
     finally:
-        if sqliteConnection:
-            sqliteConnection.close()
-            print("the sqlite connection is closed")
+        if db:
+            db.close()
 
-def getblob(key):
+
+def getblob(dbfile,key,column='blob',table='blobname'):
     """ Retrieve blob data from database """
-    dbfile = 'test.db'
-    sqliteConnection = sqlite3.connect(dbfile)
-    cursor = sqliteConnection.cursor()
-    sqlite_blob_query = "SELECT blob from blobdata where name='"+key+"'"
-    cursor.execute(sqlite_blob_query)
+    db = sqlite3.connect(dbfile)
+    cursor = db.cursor()
+    sql = "SELECT "+column+" FROM "+table+" WHERE name='"+key+"'"
+    cursor.execute(sql)
     res = cursor.fetchall()
     cursor.close()
     data = res[0][0]
+    db.close()
     return data
             
 def opendb(dbfile):
@@ -73,25 +73,18 @@ def opendb(dbfile):
     db = sqlite3.connect(dbfile, detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
     return db
 
-def writecat(cat,dbfile,table='meas'):
+def writecat(tab,dbfile,table='meas'):
     """ Write a catalog to the database """
-    ncat = dln.size(cat)
-    sqlite3.register_adapter(np.int8, int)
-    sqlite3.register_adapter(np.int16, int)
-    sqlite3.register_adapter(np.int32, int)
-    sqlite3.register_adapter(np.int64, int)
-    sqlite3.register_adapter(np.float16, float)
-    sqlite3.register_adapter(np.float32, float)
-    sqlite3.register_adapter(np.float64, float)
-    db = sqlite3.connect(dbfile, detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
+    ncat = dln.size(tab)
+    db = opendb(dbfile)
     c = db.cursor()
 
     # Convert numpy data types to sqlite3 data types
     d2d = {"S":"TEXT", "i":"INTEGER", "f":"REAL"}
 
     # Get the column names
-    cnames = cat.dtype.names
-    cdict = dict(cat.dtype.fields)
+    cnames = tab.dtype.names
+    cdict = dict(tab.dtype.fields)
     # Create the table
     #   the primary key ROWID is automatically generated
     if len(c.execute('SELECT name from sqlite_master where type= "table" and name="'+table+'"').fetchall()) < 1:
@@ -102,7 +95,7 @@ def writecat(cat,dbfile,table='meas'):
     columns = []
     for n in cnames: columns.append(n.lower())
     qmarks = np.repeat('?',dln.size(cnames))
-    c.executemany('INSERT INTO '+table+'('+','.join(columns)+') VALUES('+','.join(qmarks)+')', list(cat))
+    c.executemany('INSERT INTO '+table+'('+','.join(columns)+') VALUES('+','.join(qmarks)+')', list(tab))
     db.commit()
     db.close()
 
@@ -144,14 +137,7 @@ def analyzetable(dbfile,table,verbose=False):
 def query(dbfile,table='meas',cols='*',where=None,groupby=None,raw=False,verbose=False):
     """ Get rows from the database """
     t0 = time.time()
-    sqlite3.register_adapter(np.int8, int)
-    sqlite3.register_adapter(np.int16, int)
-    sqlite3.register_adapter(np.int32, int)
-    sqlite3.register_adapter(np.int64, int)
-    sqlite3.register_adapter(np.float16, float)
-    sqlite3.register_adapter(np.float32, float)
-    sqlite3.register_adapter(np.float64, float)
-    db = sqlite3.connect(dbfile, detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
+    db = opendb(dbfile)
     cur = db.cursor()
 
     # Convert numpy data types to sqlite3 data types
@@ -200,13 +186,16 @@ def query(dbfile,table='meas',cols='*',where=None,groupby=None,raw=False,verbose
     dtype = np.dtype(dt)
 
     # Convert to numpy structured array
-    cat = np.zeros(len(data),dtype=dtype)
-    cat[...] = data
+    tab = np.zeros(len(data),dtype=dtype)
+    tab[...] = data
     del(data)
 
     if verbose: print('got data in '+str(time.time()-t0)+' sec.')
 
-    return cat
+    return tab
+
+
+
 
 class Registry(object):
     """
@@ -214,9 +203,11 @@ class Registry(object):
     """
 
     def __init__(self,configfile):
-        self.configfile = configfile
+        self.configfile = None
         self.database_filename = None
         self.datamodel_filename = None
+        return
+        self.configfile = configfile
         # Load config file
         if os.path.exists(configfile)==False:
             raise FileNotFoundError(configfile)
@@ -224,8 +215,15 @@ class Registry(object):
         self.database_filename = self.config['database_filename']
         self.datamodel_filename = self.config['datamodel_filename']
         # initialize
-        self._db = None
-        self._cur = None
+        #self._db = None
+        #self._cur = None
+
+    def __repr__(self):
+        """ Print info """
+        out = '<Jeeves.Registry>'
+        if hasattr(self,'configfile') and self.configfile is not None:
+            out += self.configfile
+        return out
         
     def opendb(self):
         """ Open the database for reading/writing."""
@@ -241,9 +239,18 @@ class Registry(object):
                 self.cur.close()  # close cursor first
             self._db.close()
 
+    
+            
+    def initregistrytable(self):
+        """ Initialize registry table."""
+        self.cur.execute('CREATE TABLE registry (key text, filename text)')
+        self.db.commit()
+ 
     @property
     def db(self):
         """ Return the db object."""
+        if hasattr(self,'_db')==False:
+            self._db = None
         if self._db is None:
             self.opendb()
         return self._db
@@ -252,6 +259,8 @@ class Registry(object):
     def cur(self):
         """ Return the cursor object."""
         # No cursor, create it
+        if hasattr(self,'_cur')==False:
+            self._cur = None
         if self._cur is None:
             self._cur = self.db.cursor()
         return self._cur

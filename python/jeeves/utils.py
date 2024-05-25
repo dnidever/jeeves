@@ -270,3 +270,16 @@ def is_binaryfile(filename):
             return False
     except UnicodeDecodeError: # Found non-text data
         return True  
+
+def iterable(obj):
+    """
+    Check if object is iterable.
+    """
+    if hasattr(obj,'__iter__'):
+        return True
+    try:
+        dum = obj[0]
+        return True
+    except:
+        return False
+    
