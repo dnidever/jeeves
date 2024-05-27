@@ -583,8 +583,29 @@ class Database(object):
             else:
                 return False
 
-    def create(self,name,fmt):
-        """ Create table or column."""
+    def create(self,name,fmt,extra=None):
+        """
+        Create table or column.
+
+        Parameters
+        ----------
+        name : str
+           Name of the table or name of the column (in table.column format).
+        fmt : str
+           For a column this is the format type (e.g. real, text).  For a
+             table this is the list of columns and data types pairs, e.g.,
+             fmt=[('ra','real'),('dec','real'),('id','text')].
+        extra : str
+           Extra conditions to add to the table creation string.
+
+        Examples
+        --------
+
+        create('registry','')
+
+        create('registry.ra','real')
+
+        """
         vals = name.split('.')
         if len(vals)>2:
             raise ValueError('Only TABLE or TABLE.COLUMN format supported')
@@ -599,7 +620,12 @@ class Database(object):
         # Table
         else:
             table = vals[0]
-            sql = "CREATE TABLE "+table+"("+fmt+")"            
+            # Generate fmt string from list of columns and data types
+            sfmt = ','.join([f[0]+' '+f[1] for f in fmt])            
+            sql = "CREATE TABLE "+table+"("+sfmt+")"
+            # add extra conditions for the table
+            if extra is not None:
+                sql += ' '+extra
             self.cur.execute(sql)
             self.db.commit()            
 
