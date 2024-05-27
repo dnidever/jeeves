@@ -2,19 +2,12 @@ import os
 import numpy as np
 import time
 import sqlite3
+#import psycopg2 as pg
+#from psycopg2.extras import execute_values
 from dlnpyutils import utils as dln
 from . import utils
 
 """ Jeeves database code and object """
-
-def keyize(key):
-    """ Make key into a single string."""
-    if utils.iterable(key):
-        keylist = [str(k) for k in key]
-        skey = '----'.join(keylist)
-    else:
-        skey = str(key)
-    return skey
 
 def converttobinarydata(filename):
     # Convert digital data to binary format
@@ -205,22 +198,116 @@ def query(dbfile,table='registry',cols='*',where=None,raw=False,
 
     return tab
 
+def data_standardize(data,table_columns):
+    """
+    Standardize data to insert/update database.
 
+    Parameters
+    ----------
+    data : table/dict/list/tuple
+      The data to standardize.
+      Formats allowed:
+      1) table: Table with column names being the same as the 
+           database column names.
+      2) dict:  Dictionary with key values for the column names.
+           Can also be a list of dicts.
+      3) list/tuple: must have the correct number of columns
+           and in the right order.  Can also input list of lists
+           to insert multiple rows at one time.
+
+    Returns
+    -------
+    data_tuple
+       Tuple-ized data.
+    cols : list
+       List of column names for the data.
+
+    Examples
+    --------
+
+    data_tuple,cols = data_standardize(data,table_columns)
+
+    """
+
+    # The data will be converted to tuples
+    # sqlite3 database column names are NOT case sensitive
+    
+    # 1) Table
+    #---------
+    if isinstance(data,Table) or (isinstance(data,np.ndarray) and data.dtype.names is not None):
+        # Convert astropy table to numpy structured array table
+        if isinstance(data,Table):
+            data = np.array(data)
+        # Convert to tuples
+        data_tuple = data.tolist()  # list of tuples
+        cols = data.dtype.names
+        
+    # 2) Dict or list/tuple of dicts
+    #-------------------------------
+    elif isinstance(data,dict) or ((isinstance(data,list) or isinstance(data,tuple)) and
+                                   isinstance(data[0],dict)):
+        # Dict
+        if isinstance(data,dict):
+            data_tuple = [tuple(data.values())]  # single-element list of tuple
+            cols = data.keys()
+        # list/tuple of dicts
+        else:
+            # will the dict values always be ordered the same way?
+            data_tuple = [tuple(d.values()) for d in data]
+            cols = data[0].keys()
+
+    # 3) list/tuples
+    #---------------
+    elif isinstance(data,list) or isinstance(data,tuple):
+        cols = table_columns
+        # Single list/tuple
+        if isinstance(data[0],list)==False and isinstance(data[0],tuple)==False:
+            # Check number of columns
+            if len(data) != len(table_columns):
+                raise ValueError('Number of list elements does not match number of columns')
+            # Convert list to tuple
+            if isinstance(data,list):
+                data_tuple = [tuple(data)]   # single-element list of tuple
+            else:
+                data_tuple = [data]          # single-element list of tuple
+        # List of lists/tuples
+        else:
+            data_tuple = [tuple(d) for d in data]
+    # Unrecognized format
+    else:
+        raise ValueError('data format not supported')
+
+    return data_tuple,cols
+    
+    
 class Database(object):
     """
     Jeeves database object
     """
 
-    def __init__(self,filename):
+    def __init__(self,filename=':memory:'):
         self.filename = filename
 
     def __repr__(self):
         """ Print info """
-        out = '<Jeeves.Database>\n'
+        out = '<Jeeves.Database ['
         if hasattr(self,'filename') and self.filename is not None:
+            ntables = len(self.tables())
+            if ntables>0:
+                sz = self.size()
+                if sz>=1e9:
+                    osz = '{:.1f}GB'.format(sz/1e9)
+                elif sz>=1e6:
+                    osz = '{:.1f}MB'.format(sz/1e6)
+                elif sz>=1e3:
+                    osz = '{:.1f}kB'.format(sz/1e3)                    
+                out += str(ntables)+' tables,'+osz+']>\n'  
             out += self.filename+'\n'
         return out
-        
+
+    def __len__(self):
+        return self.size()
+    
     def open(self):
         """ Open the database for reading/writing."""
         if self.filename is None:
@@ -237,13 +324,23 @@ class Database(object):
 
     def size(self,name=None):
         """ Return size of database or table."""
+        sz = 0
         # Database
         if name is None:
-            pass
+            sql = 'SELECT name, SUM("pgsize") FROM "dbstat" GROUP BY name'
+            res = self.query(sql=sql)
         # Table
         else:
-            pass
- 
+            sql = 'SELECT name, SUM("pgsize") FROM "dbstat"'
+            sql += " WHERE name='"+name+"'"
+            sql += " GROUP BY name"
+            res = self.query(sql=sql)
+        sz = [r[1] for r in res if r[0]!='sqlite_schema']
+        if len(sz)==0:
+            return None
+        sz = np.sum(sz)
+        return sz
+
     @property
     def db(self):
         """ Return the db object."""
@@ -252,7 +349,7 @@ class Database(object):
         if self._db is None:
             self.open()
         return self._db
-            
+
     @property
     def cur(self):
         """ Return the cursor object."""
@@ -295,15 +392,111 @@ class Database(object):
             return query(self.db,table=table,cols=cols,where=where,raw=raw,
                          groupby=groupby,limit=limit,verbose=verbose)
 
-    def insert(self,name,key,data,update=True):
-        """ Insert information into a table. """
-        vals = name.split('.')
+    def insert(self,table,data,onconflict=None,constraintname=None):
+        """
+        Insert information into a table.
+
+        Parameters
+        ----------
+        table : str
+           Name of the table.
+        data : 
+           Data to insert.  There are 3 supported formats:
+            1) table: Table with column names being the same as the 
+                 database column names.
+            2) dict:  Dictionary with key values for the column names.
+                 Can also be a list of dicts.
+            3) list/tuple: must have the correct number of columns
+                 and in the right order.  Can also input list of lists
+                 to insert multiple rows at one time.
+        onconflict: str, optional
+            What to do when there is a uniqueness requirement on the table and there is
+              a conflict (i.e. one of the inserted rows will create a duplicate).  The
+              options are:
+              'update': Update the existing row with the information from the new insert.
+              'do nothing': Do nothing, leave the existing row as is and do not insert the
+                          new conflicting row.
+              'ignore': skips rows with conflicts.
+              'replace': replace rows with the new values on conflicts.
+              Default is None.
+        updateset : str, optional
+            Update "SET" statement.
+        constraintname : str, optional
+            If onconflict='update', then this should be the name of the unique columns
+              (comma-separated list of column names).
+            Default is None.
+
+        Examples
+        --------
+
+        insert('registry',data)
+        
+        """
+        vals = table.split('.')
         if len(vals)==1:
             raise ValueError('')
-        sql = "INSERT INTO "+table+" VALUES ("+data+")"
-        self.cur.execute(sql)
-        self.db.commit()
+        # Check that the table exists
+        if self.exists(table)==False:
+            raise ValueError('table '+str(table)+' not found')
+        # Standardize the data input
+        table_columns = self.columns(table)
+        data_tuple,cols = data_standardize(data,table_columns)
+        
+        # Given values for some of the columns
+        # INSERT INTO table_name (column1, column2, column3, ...)
+        # VALUES (value1, value2, value3, ...);
 
+        # Given values for all columns but need to be in the right order
+        # INSERT INTO table_name
+        # VALUES (value1, value2, value3, ...);
+
+        # Can also insert multiple rows
+        # INSERT INTO Customers (CustomerName, ContactName, Address, City, PostalCode, Country)
+        # VALUES
+        # ('Cardinal', 'Tom B. Erichsen', 'Skagen 21', 'Stavanger', '4006', 'Norway'),
+        # ('Greasy Burger', 'Per Olsen', 'Gateveien 15', 'Sandnes', '4306', 'Norway'),
+        # ('Tasty Tee', 'Finn Egan', 'Streetroad 19B', 'Liverpool', 'L1 0AA', 'UK');
+
+        sql = "INSERT INTO "+table
+        sql += '('+','.join(cols)+') VALUES %s'
+        # Add "on conflict" statement
+        if onconflict is not None:
+            sql += ' ON CONFLICT '+onconflict
+            if onconflict.lower()=='update' and updateset is not None:
+                sql += ' SET '+updateset
+        self.cur.execute(sql, data_tuple)
+
+    def update(self,table,data,condition):
+        """ Update database."""
+        vals = table.split('.')
+        if len(vals)==1:
+            raise ValueError('')
+        # Check that the table exists
+        if self.exists(table)==False:
+            raise ValueError('table '+str(table)+' not found')
+
+        table_columns = self.columns(table)
+        data_tuple,cols = data_standardize(data,table_columns)
+        
+        # UPDATE table_name
+        # SET column1 = value1, column2 = value2, ...
+        # WHERE condition;
+
+        # condition can be a list
+        if isinstance(condition,str):
+            condition = len(data_tuple)*[condition]  # make list
+        elif utils.iterable(condition):
+            pass
+        else:
+            raise ValueError('condition type not supported')
+        # Loop over entries
+        for i in range(len(data_tuple)):
+            pairs = [c+'='+d for c,d in zip(cols,data_tuple[i])]
+            vals = ','.join(pairs)
+            sql = "UPDATE "+table+" SET "+vals+" WHERE "+condition[i]
+            self.cur.execute(sql)
+        self.db.commit()
+        
     def dtype(self,table):
         """ Return table column dtype. """
         if self.exists(table)==False:
@@ -312,7 +505,8 @@ class Database(object):
         self.cur.execute("select sql from sqlite_master where tbl_name = '"+table+"' and type='table'")
         res = self.cur.fetchall()
         head = res[0][0]
-        # 'CREATE TABLE exposure(expnum TEXT, nchips INTEGER, filter TEXT, exptime REAL, utdate TEXT, uttime TEXT, airmass REAL, wcstype TEXT)'
+        # 'CREATE TABLE exposure(expnum TEXT, nchips INTEGER, filter TEXT, exptime REAL,
+        #                        utdate TEXT, uttime TEXT, airmass REAL, wcstype TEXT)'
         lo = head.find('(')
         hi = head.find(')')
         head = head[lo+1:hi]
