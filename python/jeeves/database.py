@@ -583,6 +583,26 @@ class Database(object):
             else:
                 return False
 
+    def sql(self,cmd):
+        """ Execute raw sql command or list of sql commands."""
+        if isinstance(cmd,str):
+            self.cur.execute(cmd)
+        elif utils.iterable(cmd):
+            for c in cmd:
+                self.cur.execute(c)
+        else:
+            raise ValueError('sql type '+str(type(cmd))+' not supported')
+        # Check if we need to commit
+        docommit = False
+        for c in ['insert','update','delete','merge','call',
+                  'explain plan','lock table']:
+            if sql.lower().find(c)>-1:
+                docommit = True
+        if docommit:
+            self.db.commit()
+        # Do we need to fetch or return anything?
+        #data = self.cur.fetchall()
+            
     def create(self,name,fmt,extra=None):
         """
         Create table or column.
@@ -629,6 +649,40 @@ class Database(object):
             self.cur.execute(sql)
             self.db.commit()            
 
+    def drop(self,name,fmt):
+        """
+        Drop/delete a table or column.
+
+        Parameters
+        ----------
+        name : str
+           Name of the table or name of the column (in table.column format).
+
+        Examples
+        --------
+
+        drop('registry')
+
+        drop('registry.ra')
+
+        """
+        vals = name.split('.')
+        if len(vals)>2:
+            raise ValueError('Only TABLE or TABLE.COLUMN format supported')
+        # Column
+        if len(vals)==2:
+            table = vals[0]
+            column = vals[1]
+            sql = "ALTER TABLE "+table+" DROP COLUMN "+column
+            self.cur.execute(sql)
+            self.db.commit()
+        # Table
+        else:
+            table = vals[0]
+            sql = "DROP TABLE "+table
+            self.cur.execute(sql)
+            self.db.commit()  
+            
     def analyze(self,table,verbose=True):
         """ Analyze table."""
         vals = name.split('.')
