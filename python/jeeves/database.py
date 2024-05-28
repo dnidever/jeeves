@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import time
+import tempfile
+import subprocess
 import sqlite3
 #import psycopg2 as pg
 #from psycopg2.extras import execute_values
@@ -8,6 +10,65 @@ from dlnpyutils import utils as dln
 from . import utils
 
 """ Jeeves database code and object """
+
+# Mimic the sqlite3 console shell's .dump command
+# Author: Paul Kippes <kippesp@gmail.com>
+# https://stackoverflow.com/questions/6677540/how-do-i-dump-a-single-sqlite3-table-in-python
+def _iterdump(connection, table_name):
+    """
+    Returns an iterator to the dump of the database in an SQL text format.
+
+    Used to produce an SQL dump of the database.  Useful to save an in-memory
+    database for later restoration.  This function should not be called
+    directly but instead called from the Connection method, iterdump().
+    """
+
+    cu = connection.cursor()
+    table_name = table_name
+
+    yield('BEGIN TRANSACTION;')
+
+    # sqlite_master table contains the SQL CREATE statements for the database.
+    q = """
+       SELECT name, type, sql
+        FROM sqlite_master
+            WHERE sql NOT NULL AND
+            type == 'table' AND
+            name == :table_name
+        """
+    schema_res = cu.execute(q, {'table_name': table_name})
+    for table_name, type, sql in schema_res.fetchall():
+        if table_name == 'sqlite_sequence':
+            yield('DELETE FROM sqlite_sequence;')
+        elif table_name == 'sqlite_stat1':
+            yield('ANALYZE sqlite_master;')
+        elif table_name.startswith('sqlite_'):
+            continue
+        else:
+            yield('%s;' % sql)
+
+        # Build the insert statement for each row of the current table
+        res = cu.execute("PRAGMA table_info('%s')" % table_name)
+        column_names = [str(table_info[1]) for table_info in res.fetchall()]
+        q = "SELECT 'INSERT INTO \"%(tbl_name)s\" VALUES("
+        q += ",".join(["'||quote(" + col + ")||'" for col in column_names])
+        q += ")' FROM '%(tbl_name)s'"
+        query_res = cu.execute(q % {'tbl_name': table_name})
+        for row in query_res:
+            yield("%s;" % row[0])
+
+    # Now when the type is 'index', 'trigger', or 'view'
+    #q = """
+    #    SELECT name, type, sql
+    #    FROM sqlite_master
+    #        WHERE sql NOT NULL AND
+    #        type IN ('index', 'trigger', 'view')
+    #    """
+    #schema_res = cu.execute(q)
+    #for name, type, sql in schema_res.fetchall():
+    #    yield('%s;' % sql)
+
+    yield('COMMIT;')
 
 def converttobinarydata(filename):
     # Convert digital data to binary format
@@ -27,9 +88,9 @@ def insertblob(dbfile,key,datafile,column='blob',table='blobdata'):
         cursor = db.cursor()
         sql = "INSERT INTO "+table
         sql += "("+column+") VALUES (?)"
-        empdata = converttobinarydata(datafile)
+        bindata = converttobinarydata(datafile)
         # Convert data into tuple format
-        data_tuple = (empdata,)
+        data_tuple = (bindata,)
         cursor.execute(sql, data_tuple)
         db.commit()
         cursor.close()
@@ -143,8 +204,8 @@ def query(dbfile,table='registry',cols='*',where=None,raw=False,
     cur = db.cursor()
 
     # Convert numpy data types to sqlite3 data types
-    d2d = {"TEXT":(np.str,200), "INTEGER":np.int,
-           "REAL":np.float, "BLOB":object}
+    d2d = {"TEXT":(str,200), "INTEGER":int,
+           "REAL":float, "BLOB":object}
 
     # Start the SELECT statement
     cmd = 'SELECT '+cols+' FROM '+table
@@ -186,6 +247,9 @@ def query(dbfile,table='registry',cols='*',where=None,raw=False,
     dt = []
     for c in columns:
         pair = c.split(' ')
+        # no data type, default is blob
+        if len(pair)==1:
+            pair.append('blob')
         dt.append( (pair[0], d2d[pair[1].upper()]) )
     dtype = np.dtype(dt)
 
@@ -540,7 +604,8 @@ class Database(object):
         self.cur.execute("select sql from sqlite_master where tbl_name = '"+table+"' and type='table'")
         res = self.cur.fetchall()
         head = res[0][0]
-        # 'CREATE TABLE exposure(expnum TEXT, nchips INTEGER, filter TEXT, exptime REAL, utdate TEXT, uttime TEXT, airmass REAL, wcstype TEXT)'
+        # 'CREATE TABLE exposure(expnum TEXT, nchips INTEGER, filter TEXT,
+        #                   exptime REAL, utdate TEXT, uttime TEXT, airmass REAL, wcstype TEXT)'
         lo = head.find('(')
         hi = head.find(')')
         head = head[lo+1:hi]
@@ -558,6 +623,7 @@ class Database(object):
         vals = name.split('.')
         if len(vals)>2:
             raise ValueError('Only TABLE or TABLE.COLUMN format supported')
+        # Should allow to check for an index as well
         # Table only
         if len(vals)==1:
             table = vals[0]
@@ -596,13 +662,15 @@ class Database(object):
         docommit = False
         for c in ['insert','update','delete','merge','call',
                   'explain plan','lock table']:
-            if sql.lower().find(c)>-1:
+            if cmd.lower().find(c)>-1:
                 docommit = True
         if docommit:
             self.db.commit()
         # Do we need to fetch or return anything?
-        #data = self.cur.fetchall()
-            
+        if cmd.lower().find('select ')>-1:
+            data = self.cur.fetchall()
+            return data
+        
     def create(self,name,fmt,extra=None):
         """
         Create table or column.
@@ -615,6 +683,8 @@ class Database(object):
            For a column this is the format type (e.g. real, text).  For a
              table this is the list of columns and data types pairs, e.g.,
              fmt=[('ra','real'),('dec','real'),('id','text')].
+             You can add an extra element for each column that gives extra
+             text like a default value or not null (e.g., 'DEFAULT "store1" NOT NULL').
         extra : str
            Extra conditions to add to the table creation string.
 
@@ -634,14 +704,20 @@ class Database(object):
             table = vals[0]
             column = vals[1]
             # fmt is the column type e.g., TEXT, REAL, etc.
-            sql = "ALTER TABLE "+table+" ADD COLUMN "+column+" "+fmt
+            # and possible extra requirements or defaults
+            if isinstance(fmt,list) or isinstance(fmt,tuple):
+                sfmt = ' '.join(fmt)
+            else:
+                sfmt = fmt
+            sql = "ALTER TABLE "+table+" ADD COLUMN "+column+" "+sfmt
             self.cur.execute(sql)
             self.db.commit()
         # Table
         else:
             table = vals[0]
             # Generate fmt string from list of columns and data types
-            sfmt = ','.join([f[0]+' '+f[1] for f in fmt])            
+            # and any extra requirements
+            sfmt = ','.join([' '.join(f) for f in fmt])            
             sql = "CREATE TABLE "+table+"("+sfmt+")"
             # add extra conditions for the table
             if extra is not None:
@@ -649,6 +725,14 @@ class Database(object):
             self.cur.execute(sql)
             self.db.commit()            
 
+    def delete(self,table,condition):
+        """
+        Delete rows in a table.
+        """
+        sql = 'DELETE FROM '+table+' WHERE '+condition
+        self.cur.execute(sql)
+        self.db.commit()
+        
     def drop(self,name,fmt):
         """
         Drop/delete a table or column.
@@ -683,12 +767,8 @@ class Database(object):
             self.cur.execute(sql)
             self.db.commit()  
             
-    def analyze(self,table,verbose=True):
+    def analyze(self,table,verbose=False):
         """ Analyze table."""
-        vals = name.split('.')
-        if len(vals)!=1:
-            raise ValueError('Only TABLE format supported')
-        table = vals[0]
         t0 = time.time()
         # Index the table
         if verbose: print('Analyzing '+table)
@@ -720,6 +800,38 @@ class Database(object):
         data = self.cur.fetchall()
         if verbose: print('indexing done after {:.1f} sec'.format(time.time()-t0))
 
-    def dump(self,filename):
+    def dump(self,filename,table=None,unix=True):
         """ Dump database to a file."""
-        pass
+        # Use sqlite3 unix commands
+        if unix:
+            lines = []
+            lines += ['.output '+filename]
+            if table is not None:
+                lines += ['.dump '+table]
+            else:
+                lines += ['.dump']
+            lines += ['.exit']
+
+            # Write to temporate file
+            fd,tfile = tempfile.mkstemp(suffix='.sql',prefix='dump',text=True)
+            dln.writelines(tfile,lines)
+        
+            # Execute sqlite3 command
+            cmd = "sqlite3 "+self.filename+" '.read "+tfile+"'"
+            res = subprocess.run(cmd,capture_output=True,shell=True)
+
+            # Delete temporary file
+            if os.path.exists(tfile):
+                os.remove(tfile)
+            
+        # Use python
+        else:
+            # https://stackoverflow.com/questions/6677540/how-do-i-dump-a-single-sqlite3-table-in-python
+            if table is not None:
+                tables = [table]
+            else:
+                tables = self.tables()
+            with open(filename, 'w') as f:
+                for t in tables:
+                    for line in _iterdump(self.db, t):
+                        f.write('%s\n' % line)        
