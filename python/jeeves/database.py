@@ -6,6 +6,7 @@ import subprocess
 import sqlite3
 #import psycopg2 as pg
 #from psycopg2.extras import execute_values
+from astropy.table import Table
 from dlnpyutils import utils as dln
 from . import utils
 
@@ -496,9 +497,6 @@ class Database(object):
         insert('registry',data)
         
         """
-        vals = table.split('.')
-        if len(vals)==1:
-            raise ValueError('')
         # Check that the table exists
         if self.exists(table)==False:
             raise ValueError('table '+str(table)+' not found')
@@ -522,13 +520,17 @@ class Database(object):
         # ('Tasty Tee', 'Finn Egan', 'Streetroad 19B', 'Liverpool', 'L1 0AA', 'UK');
 
         sql = "INSERT INTO "+table
-        sql += '('+','.join(cols)+') VALUES %s'
+        sql += '('+','.join(cols)+') VALUES('+','.join(len(cols)*'?')+')'
         # Add "on conflict" statement
         if onconflict is not None:
             sql += ' ON CONFLICT '+onconflict
             if onconflict.lower()=='update' and updateset is not None:
                 sql += ' SET '+updateset
-        self.cur.execute(sql, data_tuple)
+        if len(data_tuple)==1:
+            self.cur.execute(sql, data_tuple[0])
+        else:
+            self.cur.executemany(sql, data_tuple)
+        self.db.commit()
 
     def update(self,table,data,condition):
         """ Update database."""
